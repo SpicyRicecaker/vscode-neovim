@@ -83,48 +83,95 @@ export class MainController implements vscode.Disposable {
     private customCommandsManager!: CustomCommandsManager;
     private multilineMessagesManager!: MutlilineMessagesManager;
 
+    // Takes in settings that we loaded earlier
     public constructor(settings: ControllerSettings) {
+        const startInit = new Date().getMilliseconds();
+
+        // Sets own settings equal
         this.settings = settings;
-        this.NEOVIM_WIN_HEIGHT = settings.neovimViewportHeight;
-        this.NEOVIM_WIN_WIDTH = settings.neovimViewportWidth;
+        // Inits min height and width based on viewport height and width
+        this.NEOVIM_WIN_HEIGHT = this.settings.neovimViewportHeight;
+        this.NEOVIM_WIN_WIDTH = this.settings.neovimViewportWidth;
+        // If there is no neovim path throw error
+        // This should honestly not be here, according to rust
         if (!settings.neovimPath) {
             throw new Error("Neovim path is not defined");
         }
+        // Don't know what logger does
         this.logger = new Logger(
             LogLevel[settings.logConf.level],
             settings.logConf.logPath,
             settings.logConf.outputToConsole,
         );
+        // Don't know why push disposable
         this.disposables.push(this.logger);
 
+        // Get path of extension
         let extensionPath = settings.extensionPath;
+
+        const args = [];
+
+        // If settings wsl do some things
         if (settings.useWsl) {
             // execSync returns a newline character at the end
             extensionPath = execSync(`C:\\Windows\\system32\\wsl.exe wslpath '${extensionPath}'`).toString().trim();
+            // // If useWsl put settings neovim path on top
+            args.unshift(settings.neovimPath);
         }
 
         // These paths get called inside WSL, they must be POSIX paths (forward slashes)
         const neovimSupportScriptPath = path.posix.join(extensionPath, "vim", "vscode-neovim.vim");
         const neovimOptionScriptPath = path.posix.join(extensionPath, "vim", "vscode-options.vim");
 
+        // Get folder of workspace
         const workspaceFolder = vscode.workspace.workspaceFolders;
+        // What is workspace folder used for?
+        // Ahhhh it's the current directory we're in right now
         const cwd = workspaceFolder && workspaceFolder.length ? workspaceFolder[0].uri.fsPath : "~";
 
-        const args = [
+        args.push(
+            // No swap file??? should be -n?
             "-N",
+            // Embeds the neovim client
             "--embed",
             // load options after user config
             "-c",
+            // This literally runs one of the scripts (in vim/ folder)
             `source ${neovimOptionScriptPath}`,
             // load support script before user config (to allow to rebind keybindings/commands)
             "--cmd",
+            // Load before processing user file (so we can override user config)
             `source ${neovimSupportScriptPath}`,
+            // Afterwards cd into current directory
             "-c",
             `cd ${cwd}`,
-        ];
-        if (settings.useWsl) {
-            args.unshift(settings.neovimPath);
-        }
+        );
+
+        // const args = [
+        //     // No swap file??? should be -n?
+        //     "-N",
+        //     // Embeds the neovim client
+        //     "--embed",
+        //     // load options after user config
+        //     "-c",
+        //     // This literally runs one of the scripts (in vim/ folder)
+        //     `source ${neovimOptionScriptPath}`,
+        //     // load support script before user config (to allow to rebind keybindings/commands)
+        //     "--cmd",
+        //     // Load before processing user file (so we can override user config)
+        //     `source ${neovimSupportScriptPath}`,
+        //     // Afterwards cd into current directory
+        //     "-c",
+        //     `cd ${cwd}`,
+        // ];
+
+        // If useWsl put settings neovim path on top
+        // if (settings.useWsl) {
+        //     args.unshift(settings.neovimPath);
+        // }
+
+        console.log(args);
+        // If NEOVIM_DEBUG env variable is set listen
         if (parseInt(process.env.NEOVIM_DEBUG || "", 10) === 1) {
             args.push(
                 "-u",
@@ -133,14 +180,19 @@ export class MainController implements vscode.Disposable {
                 `${process.env.NEOVIM_DEBUG_HOST || "127.0.0.1"}:${process.env.NEOVIM_DEBUG_PORT || 4000}`,
             );
         }
+        // Flag for user custom init file
         if (settings.customInitFile) {
             args.push("-u", settings.customInitFile);
         }
+        // Spawning path
+        // He basically must be using wsl
+        // Settings.useWsl is fkin checked twice lol, no 3 times
         this.logger.debug(
             `${LOG_PREFIX}: Spawning nvim, path: ${settings.neovimPath}, useWsl: ${
                 settings.useWsl
             }, args: ${JSON.stringify(args)}`,
         );
+        // Attach logging stuff
         this.nvimProc = spawn(settings.useWsl ? "C:\\Windows\\system32\\wsl.exe" : settings.neovimPath, args, {});
         this.nvimProc.on("close", (code) => {
             this.logger.error(`${LOG_PREFIX}: Neovim exited with code: ${code}`);
@@ -159,19 +211,31 @@ export class MainController implements vscode.Disposable {
                 }),
             },
         });
+        console.log("Date passed", new Date().getMilliseconds() - startInit);
     }
 
     public async init(): Promise<void> {
+        const b = new Date();
+        
+        // `LOG_PREFIX` is `MainController`
         this.logger.debug(`${LOG_PREFIX}: Init`);
 
+        // 
         this.logger.debug(`${LOG_PREFIX}: Attaching to neovim notifications`);
+        // Client speaks to actual user i guess?
+        // On disconnect event
         this.client.on("disconnect", () => {
+            // Say goodbye
             this.logger.error(`${LOG_PREFIX}: Neovim was disconnected`);
         });
+        // On notification, send notification
         this.client.on("notification", this.onNeovimNotification);
+        // On request (what do we request?) handle request
         this.client.on("request", this.handleCustomRequest);
 
+        // Client info , geeze does a lot
         await this.client.setClientInfo("vscode-neovim", { major: 0, minor: 1, patch: 0 }, "embedder", {}, {});
+        // 
         await this.checkNeovimVersion();
         const channel = await this.client.channelId;
         await this.client.setVar("vscode_channel", channel);
@@ -245,6 +309,7 @@ export class MainController implements vscode.Disposable {
 
         await vscode.commands.executeCommand("setContext", "neovim.init", true);
         this.logger.debug(`${LOG_PREFIX}: Init completed`);
+        console.log(new Date().getMilliseconds() - b.getMilliseconds());
     }
 
     public dispose(): void {
@@ -409,6 +474,7 @@ export class MainController implements vscode.Disposable {
     };
 
     private async checkNeovimVersion(): Promise<void> {
+        // 
         const [, info] = await this.client.apiInfo;
         if (
             (info.version.major === 0 && info.version.minor < 5) ||
